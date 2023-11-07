@@ -1,0 +1,188 @@
+ cost-analyzer:
+  global:
+    grafana:
+      enabled: false # If false, Grafana will not be installed
+      proxy: false # If true, the kubecost frontend will route to your grafana through its service endpoint
+
+  kubecostFrontend:
+    resources:
+      requests:
+        cpu: "10m"
+        memory: "55Mi"
+    ipv6:
+      enabled: false # disable if the cluster does not support ipv6
+
+  kubecostModel:
+    # Run allocation ETL pipelines
+    etl: true
+    etlFileStoreEnabled: true
+    # The total number of days the ETL pipelines will build
+    # Set to 0 to disable daily ETL (not recommended)
+    etlDailyStoreDurationDays: 91
+    # The total number of hours the ETL pipelines will build
+    # Set to 0 to disable hourly ETL (not recommended)
+    etlHourlyStoreDurationHours: 49
+    # The total number of weeks the ETL pipelines will build
+    # Set to 0 to disable weekly ETL (not recommended)
+    # The default is 53 to ensure at least a year of coverage (371 days)
+    etlWeeklyStoreDurationWeeks: 53
+    # For deploying kubecost in a cluster that does not self-monitor
+    etlReadOnlyMode: false
+    etlAssetReconciliationEnabled: false
+    etlCloudUsage: false
+    maxQueryConcurrency: 5
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "55Mi"
+
+  # ingress:
+  #   enabled: true
+  #   className: aws-alb
+  #   labels:
+  #   annotations:
+  #     alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-west-1:739222496918:certificate/1c0db24f-48ed-4bff-b2f9-625b86072417
+  #     alb.ingress.kubernetes.io/group.name: core-dazzl-io
+  #     alb.ingress.kubernetes.io/healthcheck-path: /health
+  #     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443},{"HTTP": 80}]'
+  #     alb.ingress.kubernetes.io/scheme: internet-facing
+  #     alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-FS-1-2-Res-2020-10
+  #     alb.ingress.kubernetes.io/ssl-redirect: "443"
+  #     alb.ingress.kubernetes.io/target-node-labels: dazzl.io/core=true
+  #     alb.ingress.kubernetes.io/target-type: ip
+  #     alb.ingress.kubernetes.io/backend-protocol: HTTP
+  #     alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:eu-west-1:739222496918:regional/webacl/alb-firewall/ec6ef4be-80a1-47b2-b7ea-dc41aafa683e
+  #   paths: ["/"]
+  #   pathType: Prefix
+  #   hosts:
+  #     - kubecost.dev.dazzl.io
+
+  # Define persistence volume for cost-analyzer, more information at https://github.com/kubecost/docs/blob/main/storage.md
+  persistentVolume:
+    size: 1Gi
+    dbSize: 1.0Gi
+    enabled: true
+    storageClass: hostPath
+
+  # prometheus:
+  #   server:
+  #     global:
+  #       external_labels:
+  #         cluster_id: eks-dev
+  #     persistentVolume:
+  #       size: 32Gi
+  #       enabled: true
+  #       storageClass: encrypted-gp3
+  #   kube-state-metrics:
+  #     disabled: true
+  #   nodeExporter:
+  #     enabled: false
+
+  networkCosts:
+    enabled: true
+    podSecurityPolicy:
+      enabled: false
+    image: gcr.io/kubecost1/kubecost-network-costs:v0.16.7
+    imagePullPolicy: Always
+    updateStrategy:
+      type: RollingUpdate
+    # For existing Prometheus Installs, annotates the Service which generates Endpoints for each of the network-costs pods.
+    # The Service is annotated with prometheus.io/scrape: "true" to automatically get picked up by the prometheus config.
+    # NOTE: Setting this option to true and leaving the above extraScrapeConfig "job_name: kubecost-networking" configured will cause the
+    # NOTE: pods to be scraped twice.
+    prometheusScrape: false
+    # Traffic Logging will enable logging the top 5 destinations for each source
+    # every 30 minutes.
+    trafficLogging: true
+
+    # Port will set both the containerPort and hostPort to this value.
+    # These must be identical due to network-costs being run on hostNetwork
+    port: 3001
+    # this daemonset can use significant resources on large clusters: https://guide.kubecost.com/hc/en-us/articles/4407595973527-Network-Traffic-Cost-Allocation
+    resources:
+      limits: # remove the limits by setting limits: {}
+        cpu: 100m # can be less, will depend on cluster size
+        # memory: it is not recommended to set a memory limit
+      requests:
+        cpu: 50m
+        memory: 20Mi
+    extraArgs: []
+    tolerations:
+    - key: dazzl.io/dedicated
+      effect: NoSchedule
+      operator: Exists
+    config:
+      # Configuration for traffic destinations, including specific classification
+      # for IPs and CIDR blocks. This configuration will act as an override to the
+      # automatic classification provided by network-costs.
+      destinations:
+        # In Zone contains a list of address/range that will be
+        # classified as in zone.
+        in-zone:
+          # Loopback Addresses in "IANA IPv4 Special-Purpose Address Registry"
+          - "127.0.0.0/8"
+          # IPv4 Link Local Address Space
+          - "169.254.0.0/16"
+            ## Private Address Ranges in RFC-1918
+            #- "10.0.0.0/8" # Remove this entry if using Multi-AZ Kubernetes
+            #- "172.16.0.0/12"
+            #- "192.168.0.0/16"
+
+        # In Region contains a list of address/range that will be
+        # classified as in region. This is synonymous with cross
+        # zone traffic, where the regions between source and destinations
+        # are the same, but the zone is different.
+        in-region: []
+
+        # Cross Region contains a list of address/range that will be
+        # classified as non-internet egress from one region to another.
+        cross-region: []
+
+        # Internet contains a list of address/range that will be
+        # classified as internet traffic. This is synonymous with traffic
+        # that cannot be classified within the cluster.
+        # NOTE: Internet classification filters are executed _after_
+        # NOTE: direct-classification, but before in-zone, in-region,
+        # NOTE: and cross-region.
+        internet: []
+
+        # Direct Classification specifically maps an ip address or range
+        # to a region (required) and/or zone (optional). This classification
+        # takes priority over in-zone, in-region, and cross-region configurations.
+        direct-classification: []
+        # - region: "us-east1"
+        #   zone: "us-east1-c"
+        #   ips:
+        #     - "10.0.0.0/24"
+      services:
+        # amazon-web-services: when set to true, enables labeling traffic metrics with amazon web service
+        # endpoints.
+        amazon-web-services: true
+
+  reporting:
+    logCollection: false
+    productAnalytics: false
+    errorReporting: false
+    valuesReporting: false
+
+  # grafana:
+
+  # # Enables or disables the Cost Event Audit pipeline, which tracks recent changes at cluster level
+  # # and provides an estimated cost impact via the Kubecost Predict API.
+  # #
+  # # It is disabled by default to avoid problems in high-scale environments.
+  # costEventsAudit:
+  #   enabled: true
+
+  # serviceAccount:
+  #   annotations:
+  #     eks.amazonaws.com/role-arn: arn:aws:iam::739222496918:role/kubernetes-kubecost-eu-west-1
+
+  # kubecostProductConfigs:
+  #   athenaProjectID: "739222496918"
+  #   athenaBucketName: s3://aws-athena-query-results-dazzler-dev-eu-west-1
+  #   athenaRegion: eu-west-1
+  #   # https://docs.kubecost.com/install-and-configure/install/cloud-integration/aws-cloud-integrations
+  #   # The values below are created through CloudFormation
+  #   athenaDatabase: athenacurcfn_dazzler_kubecost_cur_eu_west_1
+  #   athenaTable: dazzler_kubecost_cur_eu_west_1
